@@ -1414,7 +1414,11 @@ function generateClassHeader(typeName, obj: ClassDefinition) {
           bool isReachableFromOpaqueRoots(JSC::Handle<JSC::Unknown> handle, void*, JSC::AbstractSlotVisitor&, ASCIILiteral* reason) final
           {
               auto* controller = uncheckedDowncast<${name}>(handle.slot()->asCell());
-              if (${name}::hasPendingActivity(controller->wrapped())) {
+              // wrapped() can be null when the JS wrapper was created via
+              // constructNeedsThis but the Zig constructor threw before
+              // m_ctx was assigned. Such a wrapper has no native backing
+              // and is trivially collectible.
+              if (controller->wrapped() && ${name}::hasPendingActivity(controller->wrapped())) {
                   if (reason) [[unlikely]] {
                     *reason = "has pending activity"_s;
                   }
