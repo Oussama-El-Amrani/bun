@@ -613,12 +613,38 @@ fn spin(this: *WebWorker) void {
         this.shutdown();
     }
 
-    var promise = vm.loadEntryPointForWebWorker(path) catch {
+    // Start loading the entry point module. This kicks off module
+    // resolution and evaluation but does not wait for top-level await.
+    const initial_promise = vm.reloadEntryPoint(path) catch {
         // process.exit() may have run during load; don't clobber its code.
         if (!this.exit_called) vm.exit_handler.exit_code = 1;
         this.flushLogs(vm);
         this.shutdown();
     };
+    vm.eventLoop().performGC();
+
+    this.flushLogs(vm);
+    log("[{d}] event loop start", .{this.execution_context_id});
+    // Dispatch 'online' and fire buffered messages BEFORE waiting for
+    // top-level await. The event loop spins during
+    // waitForPromiseWithTermination, so once OnlineFlag is set the
+    // worker processes posted messages even while TLA is pending. This
+    // matches Node.js and browser semantics (issue #21101).
+    WebWorker__dispatchOnline(this.cpp_worker, vm.global);
+    WebWorker__fireEarlyMessages(this.cpp_worker, vm.global);
+    this.setStatus(.running);
+
+    // Wait for the module's top-level await to settle (or termination).
+    vm.eventLoop().waitForPromiseWithTermination(jsc.AnyPromise{
+        .internal = initial_promise,
+    });
+
+    if (this.hasRequestedTerminate()) {
+        this.flushLogs(vm);
+        this.shutdown();
+    }
+
+    const promise = vm.pending_internal_promise.?;
 
     if (promise.status() == .rejected) {
         const handled = vm.uncaughtException(vm.global, promise.result(vm.jsc_vm), true);
@@ -632,15 +658,6 @@ fn spin(this: *WebWorker) void {
     }
 
     this.flushLogs(vm);
-    log("[{d}] event loop start", .{this.execution_context_id});
-    // dispatchOnline fires the parent-side 'open' event and flips the C++
-    // state to Running (which routes postMessage directly instead of
-    // queuing). It is placed after the entry point has loaded so the parent
-    // observes 'online' only once the worker's top-level code has completed;
-    // moving it earlier would change that observable ordering.
-    WebWorker__dispatchOnline(this.cpp_worker, vm.global);
-    WebWorker__fireEarlyMessages(this.cpp_worker, vm.global);
-    this.setStatus(.running);
 
     // don't run the GC if we don't actually need to
     if (vm.isEventLoopAlive() or
