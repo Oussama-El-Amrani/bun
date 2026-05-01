@@ -10,12 +10,14 @@ test("worker receives messages during top-level await", async () => {
         type: "module",
       });
 
-      worker.on("message", (msg) => {
+      worker.on("message", async (msg) => {
         console.log(msg);
         if (msg === "done") {
           clearInterval(interval);
-          worker.terminate();
-          process.exit(0);
+          // Await terminate so the worker's dispatchExit reaches us
+          // before this process exits — avoids racing teardown with
+          // process.exit().
+          await worker.terminate();
         }
       });
 
