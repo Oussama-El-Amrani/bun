@@ -174,5 +174,6 @@ test("worker receives messages posted synchronously before startup", async () =>
 
   const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
 
+  expect(stderr).not.toContain("timeout");
   expect(exitCode).toBe(0);
 });
