@@ -655,6 +655,21 @@ fn spin(this: *WebWorker) void {
         this.shutdown();
     }
 
+    // If the module already rejected synchronously (e.g. a syntax error or
+    // a top-level throw in the entry point or its preloads), handle the
+    // rejection BEFORE dispatching 'online'. Firing 'online' on a worker
+    // that's about to die would be a spurious event from the parent's
+    // perspective and can trip concurrent task-enqueue assertions during
+    // teardown.
+    if (initial_promise.status() == .rejected) {
+        const handled = vm.uncaughtException(vm.global, initial_promise.result(vm.jsc_vm), true);
+        if (!handled) {
+            vm.exit_handler.exit_code = 1;
+            this.flushLogs(vm);
+            this.shutdown();
+        }
+    }
+
     this.flushLogs(vm);
     log("[{d}] event loop start", .{this.execution_context_id});
     // Dispatch 'online' and fire buffered messages BEFORE (potentially
@@ -678,6 +693,8 @@ fn spin(this: *WebWorker) void {
 
     const promise = vm.pending_internal_promise.?;
 
+    // Handle rejection from TLA (the sync-rejection path was already
+    // handled above before dispatchOnline).
     if (promise.status() == .rejected) {
         const handled = vm.uncaughtException(vm.global, promise.result(vm.jsc_vm), true);
 
@@ -685,7 +702,7 @@ fn spin(this: *WebWorker) void {
             vm.exit_handler.exit_code = 1;
             this.shutdown();
         }
-    } else {
+    } else if (promise.status() == .fulfilled) {
         _ = promise.result(vm.jsc_vm);
     }
 
