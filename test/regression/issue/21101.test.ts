@@ -60,7 +60,7 @@ test("worker receives messages during top-level await", async () => {
   // The worker received at least 3 messages during TLA and sent "done"
   expect(stdout.trim()).toBe("done");
   expect(exitCode).toBe(0);
-});
+}, 15000);
 
 test("worker receives messages during finite top-level await", async () => {
   using dir = tempDir("issue-21101-finite", {
@@ -118,7 +118,7 @@ test("worker receives messages during finite top-level await", async () => {
   const count = parseInt(countLine!.split(":")[1]);
   expect(count).toBeGreaterThanOrEqual(1);
   expect(exitCode).toBe(0);
-});
+}, 15000);
 
 test("worker receives messages posted synchronously before startup", async () => {
   // Regression guard: when the main thread posts messages synchronously

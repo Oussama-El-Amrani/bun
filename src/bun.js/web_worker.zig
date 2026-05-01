@@ -633,10 +633,9 @@ fn spin(this: *WebWorker) void {
     // registration — messages would be dropped into an empty event scope.
     //
     // Once a listener exists (or the module finishes), the buffered
-    // inbox drain will reach live handlers. If TLA is pending but no
-    // listener is registered before the first `await`, the buffered
-    // messages still dispatch; that matches the pre-existing web worker
-    // semantics where late-registered listeners miss buffered events.
+    // inbox drain will reach live handlers. If the module's TLA never
+    // settles AND it never registers a listener, this loop blocks in
+    // autoTick() the same way waitForPromiseWithTermination would.
     while (!this.hasRequestedTerminate() and
         initial_promise.status() == .pending and
         !WebWorker__hasMessageListener(vm.global))
