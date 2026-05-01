@@ -139,6 +139,7 @@ extern fn WebWorker__teardownJSCVM(*jsc.JSGlobalObject) void;
 extern fn WebWorker__dispatchExit(*anyopaque, i32) void;
 extern fn WebWorker__dispatchOnline(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__fireEarlyMessages(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
+extern fn WebWorker__hasMessageListener(*jsc.JSGlobalObject) bool;
 extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, JSValue) void;
 
 /// Process-global registry of worker threads that have been spawned and
@@ -623,22 +624,45 @@ fn spin(this: *WebWorker) void {
     };
     vm.eventLoop().performGC();
 
-    // Drain microtasks before dispatching 'online'. This runs the
-    // synchronous portion of the module body (up to the first top-level
-    // `await`), so any message listeners registered at the top of the
-    // module exist before fireEarlyMessages drains the inbox. Without
-    // this drain, messages that arrived while the worker was still
-    // Pending would dispatch to globalEventScope with no listeners and
-    // be silently dropped.
-    vm.eventLoop().drainMicrotasksWithGlobal(vm.global, vm.jsc_vm) catch {};
+    // Spin the event loop until the module has progressed far enough to
+    // register a 'message' listener, the module promise settles (normal
+    // completion or synchronous module with no TLA), or termination is
+    // requested. Without this, a worker whose entry point imports a
+    // userland module would dispatch 'online' and fire buffered messages
+    // before the module body has had a chance to run its listener
+    // registration — messages would be dropped into an empty event scope.
+    //
+    // Once a listener exists (or the module finishes), the buffered
+    // inbox drain will reach live handlers. If TLA is pending but no
+    // listener is registered before the first `await`, the buffered
+    // messages still dispatch; that matches the pre-existing web worker
+    // semantics where late-registered listeners miss buffered events.
+    while (!this.hasRequestedTerminate() and
+        initial_promise.status() == .pending and
+        !WebWorker__hasMessageListener(vm.global))
+    {
+        vm.eventLoop().tick();
+        if (this.hasRequestedTerminate() or
+            initial_promise.status() != .pending or
+            WebWorker__hasMessageListener(vm.global))
+        {
+            break;
+        }
+        vm.eventLoop().autoTick();
+    }
+
+    if (this.hasRequestedTerminate()) {
+        this.flushLogs(vm);
+        this.shutdown();
+    }
 
     this.flushLogs(vm);
     log("[{d}] event loop start", .{this.execution_context_id});
-    // Dispatch 'online' and fire buffered messages BEFORE waiting for
-    // top-level await. The event loop spins during
+    // Dispatch 'online' and fire buffered messages BEFORE (potentially
+    // still) waiting for top-level await. The event loop spins during
     // waitForPromiseWithTermination, so messages posted to the worker
-    // are processed even while TLA is pending. This matches Node.js
-    // and browser semantics (issue #21101).
+    // are processed even while TLA is pending. This matches Node.js and
+    // browser semantics (issue #21101).
     WebWorker__dispatchOnline(this.cpp_worker, vm.global);
     WebWorker__fireEarlyMessages(this.cpp_worker, vm.global);
     this.setStatus(.running);
