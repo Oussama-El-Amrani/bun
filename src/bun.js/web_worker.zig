@@ -656,22 +656,23 @@ fn spin(this: *WebWorker) void {
     }
 
     // If the module already rejected (synchronously or through a failed
-    // preload), handle the rejection and skip dispatching 'online'.
-    // Firing 'online' on a worker that's about to die would be a
-    // spurious event from the parent's perspective, and fireEarlyMessages
-    // would post a drain CppTask that holds a Ref<Worker> — if the
-    // rejection is unhandled, shutdown() (noreturn) prevents vm.tick()
-    // from ever draining it, leaking the task and its Worker reference.
-    // If the rejection is handled, the worker is still in a failed state,
-    // so we fall through to cleanup rather than continuing as if the
-    // module loaded normally.
+    // preload), handle the rejection and shut down — do NOT enter the
+    // main event loop half-started. Firing 'online' on a worker whose
+    // module never finished evaluating would be a spurious event from
+    // the parent's perspective, and fireEarlyMessages would post a drain
+    // CppTask that holds a Ref<Worker> which shutdown() (noreturn) would
+    // never let vm.tick() drain. Letting a handled rejection fall
+    // through to the event loop would be worse: m_state stays Pending,
+    // the parent never sees 'online', every postMessage is buffered
+    // forever, and if the handler retains any refs the worker spins as
+    // an unreachable zombie. Handle the rejection, then terminate.
     if (initial_promise.status() == .rejected) {
         const handled = vm.uncaughtException(vm.global, initial_promise.result(vm.jsc_vm), true);
         if (!handled) {
             vm.exit_handler.exit_code = 1;
-            this.flushLogs(vm);
-            this.shutdown();
         }
+        this.flushLogs(vm);
+        this.shutdown();
     } else {
         this.flushLogs(vm);
         log("[{d}] event loop start", .{this.execution_context_id});
