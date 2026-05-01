@@ -623,13 +623,22 @@ fn spin(this: *WebWorker) void {
     };
     vm.eventLoop().performGC();
 
+    // Drain microtasks before dispatching 'online'. This runs the
+    // synchronous portion of the module body (up to the first top-level
+    // `await`), so any message listeners registered at the top of the
+    // module exist before fireEarlyMessages drains the inbox. Without
+    // this drain, messages that arrived while the worker was still
+    // Pending would dispatch to globalEventScope with no listeners and
+    // be silently dropped.
+    vm.eventLoop().drainMicrotasksWithGlobal(vm.global, vm.jsc_vm) catch {};
+
     this.flushLogs(vm);
     log("[{d}] event loop start", .{this.execution_context_id});
     // Dispatch 'online' and fire buffered messages BEFORE waiting for
     // top-level await. The event loop spins during
-    // waitForPromiseWithTermination, so once OnlineFlag is set the
-    // worker processes posted messages even while TLA is pending. This
-    // matches Node.js and browser semantics (issue #21101).
+    // waitForPromiseWithTermination, so messages posted to the worker
+    // are processed even while TLA is pending. This matches Node.js
+    // and browser semantics (issue #21101).
     WebWorker__dispatchOnline(this.cpp_worker, vm.global);
     WebWorker__fireEarlyMessages(this.cpp_worker, vm.global);
     this.setStatus(.running);

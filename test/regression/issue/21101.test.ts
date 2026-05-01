@@ -119,3 +119,60 @@ test("worker receives messages during finite top-level await", async () => {
   expect(count).toBeGreaterThanOrEqual(1);
   expect(exitCode).toBe(0);
 });
+
+test("worker receives messages posted synchronously before startup", async () => {
+  // Regression guard: when the main thread posts messages synchronously
+  // right after `new Worker(...)`, they are buffered in the inbox before
+  // the worker's VM starts. The worker must drain the module body to
+  // register its listener before firing the buffered messages, otherwise
+  // they are dispatched with no listener and silently dropped.
+  using dir = tempDir("issue-21101-sync", {
+    "main.js": `
+      import { Worker } from "node:worker_threads";
+
+      const worker = new Worker(new URL("./worker.js", import.meta.url), {
+        type: "module",
+      });
+
+      // Post BEFORE worker is online — these go into the pre-online inbox.
+      worker.postMessage("m1");
+      worker.postMessage("m2");
+      worker.postMessage("m3");
+
+      worker.on("message", (msg) => {
+        if (msg === "done") {
+          worker.terminate();
+          process.exit(0);
+        }
+      });
+
+      setTimeout(() => {
+        console.error("timeout — buffered messages were dropped");
+        process.exit(1);
+      }, 5000);
+    `,
+    "worker.js": `
+      import { parentPort } from "node:worker_threads";
+
+      const received = [];
+      parentPort.on("message", (msg) => {
+        received.push(msg);
+        if (received.length === 3) {
+          parentPort.postMessage("done");
+        }
+      });
+    `,
+  });
+
+  await using proc = Bun.spawn({
+    cmd: [bunExe(), "main.js"],
+    env: bunEnv,
+    cwd: String(dir),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+
+  expect(exitCode).toBe(0);
+});
