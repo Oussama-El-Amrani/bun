@@ -701,8 +701,10 @@ fn spin(this: *WebWorker) void {
         _ = vm.global.vm().runGC(false);
     }
 
-    // Always do a first tick so we call CppTask without delay after
-    // dispatchOnline.
+    // Tick once so the drain CppTask that fireEarlyMessages may have
+    // posted (synchronous module with no message listener) runs even
+    // when waitForPromiseWithTermination above was a no-op because the
+    // module promise was already settled.
     vm.tick();
 
     while (vm.isEventLoopAlive()) {
