@@ -149,7 +149,7 @@ test("worker receives messages posted synchronously before startup", async () =>
       setTimeout(() => {
         console.error("timeout — buffered messages were dropped");
         process.exit(1);
-      }, 5000);
+      }, 3000);
     `,
     "worker.js": `
       import { parentPort } from "node:worker_threads";
@@ -176,4 +176,4 @@ test("worker receives messages posted synchronously before startup", async () =>
 
   expect(stderr).not.toContain("timeout");
   expect(exitCode).toBe(0);
-});
+}, 15000);
