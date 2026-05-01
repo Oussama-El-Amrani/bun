@@ -139,17 +139,20 @@ test("worker receives messages posted synchronously before startup", async () =>
       worker.postMessage("m2");
       worker.postMessage("m3");
 
-      worker.on("message", (msg) => {
-        if (msg === "done") {
-          worker.terminate();
-          process.exit(0);
-        }
-      });
-
-      setTimeout(() => {
+      let timer = setTimeout(() => {
         console.error("timeout — buffered messages were dropped");
         process.exit(1);
       }, 3000);
+
+      worker.on("message", async (msg) => {
+        if (msg === "done") {
+          clearTimeout(timer);
+          // Await terminate so the worker's dispatchExit reaches us
+          // before this process exits — avoids racing the worker's
+          // teardown with process.exit().
+          await worker.terminate();
+        }
+      });
     `,
     "worker.js": `
       import { parentPort } from "node:worker_threads";
