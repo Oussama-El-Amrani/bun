@@ -655,37 +655,39 @@ fn spin(this: *WebWorker) void {
         this.shutdown();
     }
 
-    // If the module already rejected (synchronously or through a failed
-    // preload), handle the rejection and shut down — do NOT enter the
-    // main event loop half-started. Firing 'online' on a worker whose
-    // module never finished evaluating would be a spurious event from
-    // the parent's perspective, and fireEarlyMessages would post a drain
-    // CppTask that holds a Ref<Worker> which shutdown() (noreturn) would
-    // never let vm.tick() drain. Letting a handled rejection fall
-    // through to the event loop would be worse: m_state stays Pending,
-    // the parent never sees 'online', every postMessage is buffered
-    // forever, and if the handler retains any refs the worker spins as
-    // an unreachable zombie. Handle the rejection, then terminate.
+    // If the module already rejected synchronously, handle the rejection
+    // before dispatchOnline. Unhandled rejection terminates the worker
+    // (via onUnhandledRejection → shutdown(), noreturn). A handled
+    // rejection falls through to dispatchOnline — matching Node.js
+    // semantics where process.on('uncaughtException') can keep the
+    // worker alive. This mirrors the post-TLA rejection path below, so
+    // a worker whose module throws behaves the same way whether the
+    // throw is synchronous or after an await.
     if (initial_promise.status() == .rejected) {
         const handled = vm.uncaughtException(vm.global, initial_promise.result(vm.jsc_vm), true);
         if (!handled) {
             vm.exit_handler.exit_code = 1;
+            this.flushLogs(vm);
+            this.shutdown();
         }
-        this.flushLogs(vm);
-        this.shutdown();
-    } else {
-        this.flushLogs(vm);
-        log("[{d}] event loop start", .{this.execution_context_id});
-        // Dispatch 'online' and fire buffered messages BEFORE (potentially
-        // still) waiting for top-level await. The event loop spins during
-        // waitForPromiseWithTermination, so messages posted to the worker
-        // are processed even while TLA is pending. This matches Node.js
-        // and browser semantics (issue #21101).
-        WebWorker__dispatchOnline(this.cpp_worker, vm.global);
-        WebWorker__fireEarlyMessages(this.cpp_worker, vm.global);
-        this.setStatus(.running);
+    }
 
-        // Wait for the module's top-level await to settle (or termination).
+    this.flushLogs(vm);
+    log("[{d}] event loop start", .{this.execution_context_id});
+    // Dispatch 'online' and fire buffered messages BEFORE (potentially
+    // still) waiting for top-level await. The event loop spins during
+    // waitForPromiseWithTermination, so messages posted to the worker
+    // are processed even while TLA is pending. This matches Node.js
+    // and browser semantics (issue #21101).
+    WebWorker__dispatchOnline(this.cpp_worker, vm.global);
+    WebWorker__fireEarlyMessages(this.cpp_worker, vm.global);
+    this.setStatus(.running);
+
+    // Wait for the module's top-level await to settle (or termination).
+    // No-op if initial_promise is already settled — the sync-rejected-
+    // handled path was already dealt with above, and a fulfilled promise
+    // returns immediately from waitForPromiseWithTermination.
+    if (initial_promise.status() == .pending) {
         vm.eventLoop().waitForPromiseWithTermination(jsc.AnyPromise{
             .internal = initial_promise,
         });
@@ -700,7 +702,6 @@ fn spin(this: *WebWorker) void {
         // Handle rejection from TLA resolving after 'online' was fired.
         if (promise.status() == .rejected) {
             const handled = vm.uncaughtException(vm.global, promise.result(vm.jsc_vm), true);
-
             if (!handled) {
                 vm.exit_handler.exit_code = 1;
                 this.shutdown();
