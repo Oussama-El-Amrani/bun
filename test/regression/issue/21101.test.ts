@@ -10,10 +10,12 @@ test("worker receives messages during top-level await", async () => {
         type: "module",
       });
 
+      let watchdog;
       worker.on("message", async (msg) => {
         console.log(msg);
         if (msg === "done") {
           clearInterval(interval);
+          clearTimeout(watchdog);
           // Await terminate so the worker's dispatchExit reaches us
           // before this process exits — avoids racing teardown with
           // process.exit().
@@ -28,7 +30,7 @@ test("worker receives messages during top-level await", async () => {
         if (count >= 5) {
           clearInterval(interval);
           // If we sent 5 messages and never got "done", the bug is present.
-          setTimeout(() => process.exit(1), 2000);
+          watchdog = setTimeout(() => process.exit(1), 2000);
         }
       }, 500);
     `,
