@@ -693,6 +693,12 @@ fn spin(this: *WebWorker) void {
         });
 
         if (this.hasRequestedTerminate()) {
+            // Drain any CppTask fireEarlyMessages posted (else-branch of
+            // the no-listener case) before shutdown() runs — otherwise
+            // the heap-allocated EventLoopTask and the Ref<Worker> it
+            // captures would leak, since shutdown() is noreturn and
+            // EventLoop.deinit frees only the fifo buffer.
+            vm.tick();
             this.flushLogs(vm);
             this.shutdown();
         }
