@@ -732,6 +732,7 @@ fn spin(this: *WebWorker) void {
         const handled = vm.uncaughtException(vm.global, promise.result(vm.jsc_vm), true);
         if (!handled) {
             vm.exit_handler.exit_code = 1;
+            this.flushLogs(vm);
             this.shutdown();
         }
     } else if (promise.status() == .fulfilled) {
