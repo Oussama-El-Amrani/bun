@@ -651,11 +651,12 @@ fn spin(this: *WebWorker) void {
     }
 
     if (this.hasRequestedTerminate()) {
-        // Terminate during/after module evaluation — exit code 1 to
-        // match pre-PR behavior where loadEntryPointForWebWorker
-        // returned error.WorkerTerminated and the catch block set
-        // exit_code = 1. Don't clobber a user-chosen exit code from
-        // process.exit(N) inside the module body.
+        // Terminate arrived after the module started running — exit
+        // code 1 because evaluation was forcibly interrupted (matches
+        // Node.js worker.terminate() semantics, and makes CloseEvent
+        // report wasClean:false on the parent). Don't clobber a
+        // user-chosen exit code from process.exit(N) inside the module
+        // body.
         if (!this.exit_called) vm.exit_handler.exit_code = 1;
         this.flushLogs(vm);
         this.shutdown();
@@ -709,7 +710,8 @@ fn spin(this: *WebWorker) void {
     });
 
     if (this.hasRequestedTerminate()) {
-        // Terminate-during-TLA — exit code 1 (pre-PR behavior).
+        // Terminate arrived while TLA was pending — exit code 1,
+        // same reasoning as the pre-online check above.
         if (!this.exit_called) vm.exit_handler.exit_code = 1;
         // Drain any CppTask fireEarlyMessages posted (else-branch of
         // the no-listener case) before shutdown() runs — otherwise
