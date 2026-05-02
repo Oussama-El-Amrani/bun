@@ -663,7 +663,18 @@ fn spin(this: *WebWorker) void {
     // worker alive. This mirrors the post-TLA rejection path below, so
     // a worker whose module throws behaves the same way whether the
     // throw is synchronous or after an await.
+    //
+    // Track whether we already dispatched a rejection so the post-TLA
+    // check below doesn't double-fire. Re-reading the promise status
+    // isn't sufficient — `fireEarlyMessages` can synchronously run JS
+    // (drainInbox) which may resolve an awaited promise, run the TLA
+    // continuation, and transition `initial_promise` `.pending → .rejected`
+    // in between. Using a flag ensures: the sync-rejection dispatched
+    // here isn't re-dispatched later, and a rejection that happens during
+    // or after `fireEarlyMessages` still gets reported.
+    var rejection_dispatched = false;
     if (initial_promise.status() == .rejected) {
+        rejection_dispatched = true;
         const handled = vm.uncaughtException(vm.global, initial_promise.result(vm.jsc_vm), true);
         if (!handled) {
             vm.exit_handler.exit_code = 1;
@@ -684,37 +695,37 @@ fn spin(this: *WebWorker) void {
     this.setStatus(.running);
 
     // Wait for the module's top-level await to settle (or termination).
-    // No-op if initial_promise is already settled — the sync-rejected-
-    // handled path was already dealt with above, and a fulfilled promise
-    // returns immediately from waitForPromiseWithTermination.
-    if (initial_promise.status() == .pending) {
-        vm.eventLoop().waitForPromiseWithTermination(jsc.AnyPromise{
-            .internal = initial_promise,
-        });
+    // No-op on an already-settled promise, so this is safe to run
+    // unconditionally; the rejection_dispatched flag prevents the
+    // post-TLA check from firing twice on sync-rejection.
+    vm.eventLoop().waitForPromiseWithTermination(jsc.AnyPromise{
+        .internal = initial_promise,
+    });
 
-        if (this.hasRequestedTerminate()) {
-            // Drain any CppTask fireEarlyMessages posted (else-branch of
-            // the no-listener case) before shutdown() runs — otherwise
-            // the heap-allocated EventLoopTask and the Ref<Worker> it
-            // captures would leak, since shutdown() is noreturn and
-            // EventLoop.deinit frees only the fifo buffer.
-            vm.tick();
-            this.flushLogs(vm);
+    if (this.hasRequestedTerminate()) {
+        // Drain any CppTask fireEarlyMessages posted (else-branch of
+        // the no-listener case) before shutdown() runs — otherwise
+        // the heap-allocated EventLoopTask and the Ref<Worker> it
+        // captures would leak, since shutdown() is noreturn and
+        // EventLoop.deinit frees only the fifo buffer.
+        vm.tick();
+        this.flushLogs(vm);
+        this.shutdown();
+    }
+
+    const promise = vm.pending_internal_promise.?;
+
+    // Handle rejection from TLA (or from JS run during
+    // fireEarlyMessages) — but only if we didn't already dispatch it
+    // above.
+    if (promise.status() == .rejected and !rejection_dispatched) {
+        const handled = vm.uncaughtException(vm.global, promise.result(vm.jsc_vm), true);
+        if (!handled) {
+            vm.exit_handler.exit_code = 1;
             this.shutdown();
         }
-
-        const promise = vm.pending_internal_promise.?;
-
-        // Handle rejection from TLA resolving after 'online' was fired.
-        if (promise.status() == .rejected) {
-            const handled = vm.uncaughtException(vm.global, promise.result(vm.jsc_vm), true);
-            if (!handled) {
-                vm.exit_handler.exit_code = 1;
-                this.shutdown();
-            }
-        } else if (promise.status() == .fulfilled) {
-            _ = promise.result(vm.jsc_vm);
-        }
+    } else if (promise.status() == .fulfilled) {
+        _ = promise.result(vm.jsc_vm);
     }
 
     this.flushLogs(vm);
